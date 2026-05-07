@@ -1,8 +1,9 @@
 import os
 import redis
+import logging
 from flask.views import MethodView
 from flask_smorest import Blueprint, abort
-from passlib.hash import pbkdf2_sha256
+import bcrypt
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
@@ -20,11 +21,24 @@ from schemas import UserSchema, UserRegisterSchema
 from tasks import send_user_registration_email
 
 
+logger = logging.getLogger(__name__)
+
 blp = Blueprint("Users", "users", description="Operations on users")
+
 connection = redis.from_url(
-    os.getenv("REDIS_URL")
-)  # Get this from Render.com or run in Docker
+    os.getenv("REDIS_URL", "redis://localhost:6379")
+)
 queue = Queue("emails", connection=connection)
+
+
+def hash_password(password: str) -> str:
+    """Hash a password using bcrypt."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify a password against its bcrypt hash."""
+    return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
 
 
 @blp.route("/register")
@@ -42,12 +56,15 @@ class UserRegister(MethodView):
         user = UserModel(
             username=user_data["username"],
             email=user_data["email"],
-            password=pbkdf2_sha256.hash(user_data["password"]),
+            password=hash_password(user_data["password"]),
         )
         db.session.add(user)
         db.session.commit()
 
-        queue.enqueue(send_user_registration_email, user.email, user.username)
+        try:
+            queue.enqueue(send_user_registration_email, user.email, user.username)
+        except Exception:
+            logger.warning("Failed to enqueue registration email for %s", user.email)
 
         return {"message": "User created successfully."}, 201
 
@@ -60,9 +77,9 @@ class UserLogin(MethodView):
             UserModel.username == user_data["username"]
         ).first()
 
-        if user and pbkdf2_sha256.verify(user_data["password"], user.password):
-            access_token = create_access_token(identity=user.id, fresh=True)
-            refresh_token = create_refresh_token(identity=user.id)
+        if user and verify_password(user_data["password"], user.password):
+            access_token = create_access_token(identity=str(user.id), fresh=True)
+            refresh_token = create_refresh_token(identity=str(user.id))
             return {"access_token": access_token, "refresh_token": refresh_token}
 
         abort(401, message="Invalid credentials.")
@@ -74,6 +91,8 @@ class TokenRefresh(MethodView):
     def post(self):
         current_user = get_jwt_identity()
         new_token = create_access_token(identity=current_user, fresh=False)
+        jti = get_jwt()["jti"]
+        BLOCKLIST.add(jti)
         return {"access_token": new_token}
 
 
@@ -93,7 +112,12 @@ class User(MethodView):
         user = UserModel.query.get_or_404(user_id)
         return user
 
+    @jwt_required()
     def delete(self, user_id):
+        jwt = get_jwt()
+        if not jwt.get("is_admin"):
+            abort(401, message="Admin privilege required.")
+
         user = UserModel.query.get_or_404(user_id)
         db.session.delete(user)
         db.session.commit()

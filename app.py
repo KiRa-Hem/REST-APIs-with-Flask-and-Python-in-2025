@@ -1,9 +1,11 @@
 import os
+import logging
 
 from flask import Flask, jsonify
 from flask_smorest import Api
 from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
+from flask_cors import CORS
 from dotenv import load_dotenv
 
 
@@ -21,6 +23,13 @@ def create_app(db_url=None):
     app = Flask(__name__)
     load_dotenv()
 
+    # --- Logging ---
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    # --- Core Config ---
     app.config["PROPAGATE_EXCEPTIONS"] = True
     app.config["API_TITLE"] = "Stores REST API"
     app.config["API_VERSION"] = "v1"
@@ -30,11 +39,15 @@ def create_app(db_url=None):
     app.config["OPENAPI_SWAGGER_UI_URL"] = "https://cdn.jsdelivr.net/npm/swagger-ui-dist/"
     app.config["SQLALCHEMY_DATABASE_URI"] = db_url or os.getenv("DATABASE_URL", "sqlite:///data.db")
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+    # --- Extensions ---
     db.init_app(app)
     migrate = Migrate(app, db)
+    CORS(app)
     api = Api(app)
 
-    app.config["JWT_SECRET_KEY"] = "jose"
+    # --- JWT Config ---
+    app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", os.urandom(32).hex())
     jwt = JWTManager(app)
 
     @jwt.token_in_blocklist_loader
@@ -97,9 +110,10 @@ def create_app(db_url=None):
             401,
         )
 
-    @app.before_first_request
-    def create_tables():
-        db.create_all()
+    # --- Health Check ---
+    @app.route("/health")
+    def health_check():
+        return {"status": "healthy"}
 
     api.register_blueprint(ItemBlueprint)
     api.register_blueprint(StoreBlueprint)
