@@ -29,6 +29,7 @@ class Item(MethodView):
         db.session.commit()
         return {"message": "Item deleted."}
 
+    @jwt_required()
     @blp.arguments(ItemUpdateSchema)
     @blp.response(200, ItemSchema)
     def put(self, item_data, item_id):
@@ -62,6 +63,6 @@ class ItemList(MethodView):
             db.session.add(item)
             db.session.commit()
         except SQLAlchemyError:
-            abort(500, message="An error occurred whilte inserting the item.")
+            abort(500, message="An error occurred while inserting the item.")
 
         return item
